@@ -138,14 +138,11 @@ NOTES on idx:
         sizes (map (fn [[a b]]
                      (- b a))
                    (partition 2 1 [pack-objs-end] (keys idx-data)))
-        datas (map (partial read-pack-entry! mm)
-                   idx-data
-                   sizes)
-        ]
-    (into {} datas)
-    )
-    ;; iterate through pack combining sorted-map and type + meta-data contents
-  )
+        datas (doall
+               (map (partial read-pack-entry! mm)
+                    idx-data
+                    sizes))]
+    (into {} datas)))
 
 (defn load-git-meta
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
