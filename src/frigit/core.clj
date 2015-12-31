@@ -55,20 +55,6 @@
 (defn idx-read-entries! [mm num]
   (let [bytes (byte-array 4)
         buf (ByteBuffer/allocate (/ Integer/SIZE 8))]
-    ;; TODO Remove? - doesn't seem faster
-    #_(let [acc (transient [])]
-      (loop [n num]
-        (if (zero? n)
-          (persistent! acc)
-          (do
-            (.get mm bytes 0 4)
-            (doto buf
-              (.rewind)
-              (.put bytes)
-              (.flip))
-            (conj! acc (.getInt buf))
-            (recur (dec n))))))
-    ;; TODO Keep.
     (doall
      (for [n (range num)]
        (do
@@ -176,33 +162,6 @@ NOTES on idx:
     (apply merge
            (into {} loose-objects)
            (map read-pack packs))))
-
-;; dotimes
-
-(defn read-perf [pack-path step-size]
-  (let [idx-path (.replace pack-path ".pack" ".idx")
-        idx-size (.length (File. idx-path))
-        pack-size (.length (File. pack-path))
-        pack-objs-end (- pack-size 20)
-        irchan (nio/readable-channel idx-path)
-        prchan (nio/readable-channel pack-path)
-        imm (chan->mmchannel irchan)
-        pmm (chan->mmchannel prchan)]
-    (dotimes [_ (/ idx-size step-size)]
-      (let [bytes (byte-array step-size)]
-        (.get imm bytes)))
-    (dotimes [_ (/ pack-size step-size)]
-      (let [bytes (byte-array step-size)]
-        (.get pmm bytes)))
-    ))
-
-(defn perftest [path step-size]
-  (let [dp (File. (str path "/objects/pack"))
-        packs (for [f (.listFiles dp)
-                    :when (re-find #"\.pack$" (.getName f))]
-                (.getCanonicalPath f))]
-    (doseq [p packs]
-      (read-perf p step-size))))
 
 (comment
 
