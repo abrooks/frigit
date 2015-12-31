@@ -31,7 +31,6 @@
 (def object-types #{"tree" "blob" "commit" "tag"})
 (def object-peek-bytes (count (str "commit " Integer/MAX_VALUE (char 0))))
 
-;; On a large repo which takes 7-8.5s to load, about 1s of that is decompressing commits & trees
 (defn unpack-data [bytes size]
   (let [buf (byte-array size)
         infl (Inflater.)]
@@ -54,32 +53,28 @@
 
 (defn idx-read-entries! [mm num]
   (let [bytes (byte-array 4)
-        buf (ByteBuffer/allocate (/ Integer/SIZE 8))]
-    (doall
-     (for [n (range num)]
-       (do
-         (.get mm bytes 0 4)
-         (doto buf
-           (.rewind)
-           (.put bytes)
-           (.flip))
-         (.getInt buf))))))
+        buf (ByteBuffer/allocate (/ Integer/SIZE 8))
+        acc (transient [])]
+    (dotimes [n num]
+      (.get mm bytes 0 4)
+      (doto buf (.rewind) (.put bytes) (.flip))
+      (conj! acc (.getInt buf)))
+    (persistent! acc)))
 
 (defn idx-read-shas! [mm count]
-  ;; Extra leading zero byte to keep unsigned
-  (let [bytes (byte-array 21)]
-    (doall
-     (for [n (range count)]
-       (do
-         (.get mm bytes 1 20)
-         (.toString (java.math.BigInteger. bytes) 16))))))
+  ;; Extra leading zero byte to keep leading bits unsigned
+  (let [bytes (byte-array 21)
+        acc (transient [])]
+    (dotimes [n count]
+      (.get mm bytes 1 20)
+      (conj! acc (.toString (java.math.BigInteger. bytes) 16)))
+    (persistent! acc)))
 
-"
-NOTES on idx:
-- fan-out entries are cumulative so the last entry has total count of objects
-- object count from last fan-out is needed to walk v2 chunks
-- idx is needed to know sha and offset of each object
-"
+
+;; NOTES on idx:
+;; - fan-out entries are cumulative so the last entry has total count of objects
+;; - object count from last fan-out is needed to walk v2 chunks
+;; - idx is needed to know sha and offset of each object
 (defn read-idx [path]
   (let [rchan (nio/readable-channel path)
         mm (chan->mmchannel rchan)
@@ -104,6 +99,20 @@ NOTES on idx:
    2r110 :obj_ofs_delta
    2r111 :obj_ref_delta})
 
+(defn get-pack-unpack-size
+  [mm hdr pack-entry-size]
+  (let [[sz-bytes unpack-size]
+        , (loop [last hdr n 0 sz (bit-and 2r00001111 hdr)]
+            (if (zero? (bit-and 2r10000000 last))
+              [(inc n) sz]
+              (let [next (.get mm)
+                    val (-> next
+                            (bit-and 2r01111111)
+                            (bit-shift-left (+ 4 (* 7 n))))]
+                (recur next (inc n) (bit-or val sz)))))
+        pack-size (- pack-entry-size sz-bytes)]
+    [pack-size unpack-size]))
+
 (defn read-pack-entry!
   [mm [pos sha] pack-entry-size]
   (.position mm pos)
@@ -112,21 +121,13 @@ NOTES on idx:
                   (bit-shift-right 4)
                   (bit-and 2r111)
                   (pack-hdr-type))
-        [sz-bytes unpack-size] (loop [last hdr n 0 sz (bit-and 2r00001111 hdr)]
-                                 (if (zero? (bit-and 2r10000000 last))
-                                   [(inc n) sz]
-                                   (let [next (.get mm)
-                                         val (-> next
-                                                 (bit-and 2r01111111)
-                                                 (bit-shift-left (+ 4 (* 7 n))))]
-                                     (recur next (inc n) (bit-or val sz)))))
-        pack-size (- pack-entry-size sz-bytes)
+        [pack-size unpack-size] (get-pack-unpack-size mm hdr pack-entry-size)
         bytes (byte-array pack-size)
         _ (.get mm bytes 0 pack-size)
         data (if (#{:obj_commit :obj_tree} otype)
                (unpack-data bytes unpack-size)
                (name otype))]
-    [sha  {:type otype :s pack-size :u unpack-size :d (String. data)}]))
+    [sha  {:type otype :size unpack-size :data (String. data)}]))
 
 (defn read-pack [pack-path]
   (let [idx-path (.replace pack-path ".pack" ".idx")
@@ -144,21 +145,29 @@ NOTES on idx:
                     sizes))]
     (into {} datas)))
 
+(defn load-git-loose-objs
+  [path]
+  (doall
+   (for [sha-dir (-> path (str "/objects") File. .listFiles)
+         :when (not (#{"pack" "info"} (.getName sha-dir)))
+         sha-file (.listFiles sha-dir)
+         :let [sha (str (.getName sha-dir) (.getName sha-file))
+               bytes (Files/readAllBytes (.toPath sha-file))]]
+     [sha (parse-object-hdr (:header (unpack-object bytes object-peek-bytes)))])))
+
+(defn load-git-pack-objs
+  [path]
+  (doall
+   (for [f (-> path (str "/objects/pack") File. .listFiles)
+         :when (re-find #"\.pack$" (.getName f))]
+     (.getCanonicalPath f))))
+
 (defn load-git-meta
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
   Returns map of shas of maps with :type and appropriate params"
   [path]
-  (let [d (File. (str path "/objects"))
-        loose-objects (for [sha-dir (.listFiles d)
-                            :when (not (#{"pack" "info"} (.getName sha-dir)))
-                            sha-file (.listFiles sha-dir)
-                            :let [sha (str (.getName sha-dir) (.getName sha-file))
-                                  bytes (Files/readAllBytes (.toPath sha-file))]]
-                        [sha (parse-object-hdr (:header (unpack-object bytes object-peek-bytes)))])
-        dp (File. (str path "/objects/pack"))
-        packs (for [f (.listFiles dp)
-                    :when (re-find #"\.pack$" (.getName f))]
-                (.getCanonicalPath f))]
+  (let [loose-objects (load-git-loose-objs path)
+        packs (load-git-pack-objs path)]
     (apply merge
            (into {} loose-objects)
            (map read-pack packs))))
