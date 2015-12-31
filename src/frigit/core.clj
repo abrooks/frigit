@@ -1,7 +1,6 @@
 (ns frigit.core
   (:require [nio.core :as nio]
-            [clojure.string :as s]
-            [clj-struct.core :as struct])
+            [clojure.string :as s])
   (:import [java.io File RandomAccessFile]
            [java.util Arrays]
            [java.util.zip Inflater]
