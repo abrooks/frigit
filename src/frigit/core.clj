@@ -53,7 +53,7 @@
      :size bsize}))
 
 (defn idx-read-entries! [mm num]
-  (let [bytes (byte-array [0 0 0 0])
+  (let [bytes (byte-array 4)
         buf (ByteBuffer/allocate (/ Integer/SIZE 8))]
     (doall
      (for [n (range num)]
@@ -67,7 +67,7 @@
 
 (defn idx-read-shas! [mm count]
   ;; Extra leading zero byte to keep unsigned
-  (let [bytes (byte-array (take 21 (repeat 0)))]
+  (let [bytes (byte-array 21)]
     (doall
      (for [n (range count)]
        (do
@@ -121,7 +121,7 @@ NOTES on idx:
                                                  (bit-shift-left (+ 4 (* 7 n))))]
                                      (recur next (inc n) (bit-or val sz)))))
         pack-size (- pack-entry-size sz-bytes)
-        bytes (byte-array (take pack-size (repeat 0)))
+        bytes (byte-array pack-size)
         _ (.get mm bytes 0 pack-size)
         data (if (#{:obj_commit :obj_tree} otype)
                (unpack-data bytes unpack-size)
@@ -187,4 +187,14 @@ NOTES on idx:
 
   (time (do (load-git-meta groot) nil))
 
+
+
   )
+
+;; large repo stats
+;; ~8 seconds total read
+;; --
+;; 1 second of gzip inflation
+;; ~1.8 seconds of reading average of 61byte chunks
+;; ~3 seconds of byte-array from collection
+;; 90% of the time is idx+pax (idx = 33%, pack = 66% of the 90%)
