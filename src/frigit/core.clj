@@ -4,7 +4,7 @@
   (:import [java.io File RandomAccessFile]
            [java.util Arrays]
            [java.util.zip Inflater]
-           [java.nio ByteBuffer]
+           [java.nio ByteBuffer DirectByteBufferR]
            [java.nio.file Files Paths Path]
            [java.nio.channels.FileChannel]
            [java.nio.charset StandardCharsets]))
@@ -51,7 +51,7 @@
     {:type otype
      :size bsize}))
 
-(defn idx-read-entries! [mm num]
+(defn idx-read-entries! [^DirectByteBufferR mm num]
   (let [bytes (byte-array 4)
         buf (ByteBuffer/allocate (/ Integer/SIZE 8))
         acc (transient [])]
@@ -61,7 +61,7 @@
       (conj! acc (.getInt buf)))
     (persistent! acc)))
 
-(defn idx-read-shas! [mm count]
+(defn idx-read-shas! [^DirectByteBufferR mm count]
   ;; Extra leading zero byte to keep leading bits unsigned
   (let [bytes (byte-array 21)
         acc (transient [])]
@@ -77,7 +77,7 @@
 ;; - idx is needed to know sha and offset of each object
 (defn read-idx [path]
   (let [rchan (nio/readable-channel path)
-        mm (chan->mmchannel rchan)
+        ^DirectByteBufferR mm (chan->mmchannel rchan)
         _ (assert (check-idx-v2-hdr! mm))
         ;; skip to last fan-out entry
         _ (.position mm (+ (* 4 (dec 256)) (.position mm)))
@@ -100,7 +100,7 @@
    2r111 :obj_ref_delta})
 
 (defn get-pack-unpack-size
-  [mm hdr pack-entry-size]
+  [^DirectByteBufferR mm hdr pack-entry-size]
   (let [[sz-bytes unpack-size]
         , (loop [last hdr n 0 sz (bit-and 2r00001111 hdr)]
             (if (zero? (bit-and 2r10000000 last))
@@ -114,7 +114,7 @@
     [pack-size unpack-size]))
 
 (defn read-pack-entry!
-  [mm [pos sha] pack-entry-size]
+  [^DirectByteBufferR mm [pos sha] pack-entry-size]
   (.position mm pos)
   (let [hdr (.get mm)
         otype (-> hdr
@@ -201,6 +201,7 @@
 ;; ~8 seconds total read
 ;; --
 ;; 1 second of gzip inflation
-;; ~1.8 seconds of reading average of 61byte chunks
+;; ~1.8 seconds of reading average of 61byte chunks (bigger chunks is much faster)
 ;; ~3 seconds of byte-array from collection
+;; ~3 seconds of reflection on java.nio.DirectByteBufferR
 ;; 90% of the time is idx+pax (idx = 33%, pack = 66% of the 90%)
