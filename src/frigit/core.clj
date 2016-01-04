@@ -13,6 +13,11 @@
 ;; http://schacon.github.io/gitbook/7_how_git_stores_objects.html
 ;; https://github.com/git/git/blob/master/Documentation/technical/pack-format.txt
 
+;; Save existing reflection warnings (restored at EOF)
+(def reflection-state *warn-on-reflection*)
+;; This code is very sensitive to reflection so
+(set! *warn-on-reflection* true)
+
 (def idx-magic-v2+ (byte-array (map int "\377tOc")))
 (def idx-ver-v2 (byte-array [0 0 0 2]))
 
@@ -205,3 +210,6 @@
 ;; ~3 seconds of byte-array from collection
 ;; ~3 seconds of reflection on java.nio.DirectByteBufferR
 ;; 90% of the time is idx+pax (idx = 33%, pack = 66% of the 90%)
+
+;; Restore reflection warnings
+(set! *warn-on-reflection* reflection-state)
