@@ -21,16 +21,16 @@
 (def idx-magic-v2+ (byte-array (map int "\377tOc")))
 (def idx-ver-v2 (byte-array [0 0 0 2]))
 
-(defn check-idx-v2-hdr! [mmchannel]
+(defn check-idx-v2-hdr! [^DirectByteBufferR mmchannel]
   (let [magic-bytes (byte-array 4)
         version-bytes (byte-array 4)]
     (doto mmchannel
       (.get magic-bytes 0 4)
       (.get version-bytes 0 4))
-    (and (Arrays/equals idx-magic-v2+ magic-bytes)
-         (Arrays/equals idx-ver-v2 version-bytes))))
+    (and (Arrays/equals ^bytes idx-magic-v2+ magic-bytes)
+         (Arrays/equals ^bytes idx-ver-v2 version-bytes))))
 
-(defn chan->mmchannel [rchan]
+(defn chan->mmchannel [^sun.nio.ch.FileChannelImpl rchan]
   (.map rchan java.nio.channels.FileChannel$MapMode/READ_ONLY 0 (.size rchan)))
 
 (def object-types #{"tree" "blob" "commit" "tag"})
@@ -151,11 +151,11 @@
     (into {} datas)))
 
 (defn load-git-loose-objs
-  [path]
+  [^String path]
   (doall
-   (for [sha-dir (-> path (str "/objects") File. .listFiles)
+   (for [^File sha-dir (-> path (str "/objects") File. .listFiles)
          :when (not (#{"pack" "info"} (.getName sha-dir)))
-         sha-file (.listFiles sha-dir)
+         ^File sha-file (.listFiles sha-dir)
          :let [sha (str (.getName sha-dir) (.getName sha-file))
                bytes (Files/readAllBytes (.toPath sha-file))]]
      [sha (parse-object-hdr (:header (unpack-object bytes object-peek-bytes)))])))
@@ -163,7 +163,7 @@
 (defn load-git-pack-objs
   [path]
   (doall
-   (for [f (-> path (str "/objects/pack") File. .listFiles)
+   (for [^File f (-> path (str "/objects/pack") File. .listFiles)
          :when (re-find #"\.pack$" (.getName f))]
      (.getCanonicalPath f))))
 
