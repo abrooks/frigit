@@ -33,28 +33,8 @@
 (defn chan->mmchannel [^sun.nio.ch.FileChannelImpl rchan]
   (.map rchan java.nio.channels.FileChannel$MapMode/READ_ONLY 0 (.size rchan)))
 
-(def object-types #{"tree" "blob" "commit" "tag"})
-(def object-peek-bytes (count (str "commit " Integer/MAX_VALUE (char 0))))
-
-(defn unpack-data [bytes size]
-  (let [buf (byte-array size)
-        infl (Inflater.)]
-    (doto infl
-      (.setInput bytes)
-      (.inflate buf)
-      (.end))
-    buf))
-
-(defn unpack-object [bytes size]
-  (let [buf (unpack-data bytes size)]
-    (zipmap [:header :body]
-            (s/split (String. buf) (re-pattern (str (char 0))) 2))))
-
-(defn parse-object-hdr [hdr]
-  (let [[otype bsize-str] (s/split hdr #" " 2)
-        bsize (Integer/parseInt bsize-str)]
-    {:type otype
-     :size bsize}))
+;; Longest object header we expect to see.
+(def object-peek-bytes (count (str "commit " Long/MAX_VALUE (char 0))))
 
 (defn idx-read-entries! [^DirectByteBufferR mm num]
   (let [bytes (byte-array 4)
@@ -107,7 +87,7 @@
 (defn get-pack-unpack-size
   [^DirectByteBufferR mm hdr pack-entry-size]
   (let [[sz-bytes unpack-size]
-        , (loop [last hdr n 0 sz (bit-and 2r00001111 hdr)]
+        , (loop [last hdr, n 0, sz (bit-and 2r00001111 hdr)]
             (if (zero? (bit-and 2r10000000 last))
               [(inc n) sz]
               (let [next (.get mm)
@@ -119,7 +99,7 @@
     [pack-size unpack-size]))
 
 (defn read-pack-entry!
-  [^DirectByteBufferR mm [pos sha] pack-entry-size]
+  [handle-obj-fn ^DirectByteBufferR mm [pos sha] pack-entry-size]
   (.position mm pos)
   (let [hdr (.get mm)
         otype (-> hdr
@@ -129,12 +109,11 @@
         [pack-size unpack-size] (get-pack-unpack-size mm hdr pack-entry-size)
         bytes (byte-array pack-size)
         _ (.get mm bytes 0 pack-size)
-        data (if (#{:obj_commit :obj_tree} otype)
-               (unpack-data bytes unpack-size)
-               (name otype))]
-    [sha  {:type otype :size unpack-size :data (String. data)}]))
+        data (handle-obj-fn otype bytes unpack-size)]
+    [sha  {:type otype :size unpack-size :data data}]))
 
-(defn read-pack [pack-path]
+(defn read-pack-objs
+  [handle-obj-fn ^String pack-path]
   (let [idx-path (.replace pack-path ".pack" ".idx")
         idx-data (read-idx idx-path)
         pack-size (.length (File. pack-path))
@@ -145,10 +124,32 @@
                      (- b a))
                    (partition 2 1 [pack-objs-end] (keys idx-data)))
         datas (doall
-               (map (partial read-pack-entry! mm)
+               (map (partial read-pack-entry! handle-obj-fn mm)
                     idx-data
                     sizes))]
     (into {} datas)))
+
+;; *Not* thread safe -- worth more than 100ms on large repo of ~95K objects
+(def inflater (Inflater.))
+
+(defn unzip-data [^bytes bytes size]
+  (let [buf (byte-array size)]
+    (doto ^Inflater inflater
+      (.setInput bytes)
+      (.inflate buf)
+      (.reset))
+    buf))
+
+(defn unpack-object [bytes size]
+  (let [^bytes buf (unzip-data bytes size)]
+    (zipmap [:header :body]
+            (s/split (String. buf) (re-pattern (str (char 0))) 2))))
+
+(defn parse-object-hdr [^String hdr]
+  (let [[otype bsize-str] (s/split hdr #" " 2)
+        bsize (Integer/parseInt bsize-str)]
+    {:type otype
+     :size bsize}))
 
 (defn load-git-loose-objs
   [^String path]
@@ -160,8 +161,8 @@
                bytes (Files/readAllBytes (.toPath sha-file))]]
      [sha (parse-object-hdr (:header (unpack-object bytes object-peek-bytes)))])))
 
-(defn load-git-pack-objs
-  [path]
+(defn git-pack-files
+  [^String path]
   (doall
    (for [^File f (-> path (str "/objects/pack") File. .listFiles)
          :when (re-find #"\.pack$" (.getName f))]
@@ -170,12 +171,93 @@
 (defn load-git-meta
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
   Returns map of shas of maps with :type and appropriate params"
-  [path]
+  [handle-obj-fn path]
   (let [loose-objects (load-git-loose-objs path)
-        packs (load-git-pack-objs path)]
-    (apply merge
-           (into {} loose-objects)
-           (map read-pack packs))))
+        packs (git-pack-files path)]
+    (doall (apply concat loose-objects (map (partial read-pack-objs handle-obj-fn) packs)))))
+
+;; ======================================================================
+;; consumer defined
+;; ======================================================================
+
+(defn parse-commit [^String s]
+  (let [lines (s/split-lines s)
+        tree (second (s/split (first lines) #" "))
+        parents (->> (rest lines)
+                     (filter #(.startsWith ^String % "parent"))
+                     (map #(second (s/split % #" "))) )]
+    (str  "tree:" tree " parents:" parents)))
+
+(def parent-filtering (filter #(.startsWith ^String % "parent")))
+(def value-keeping (map #(second (s/split % #" "))))
+
+(defn parse-commit2 [^String s]
+  (let [lines (s/split-lines s)
+        tree (second (s/split (first lines) #" "))
+        parents (into [] (comp parent-filtering value-keeping) (rest lines))]
+    (str  "tree:" tree " parents:" parents)))
+
+;; tree, parent*, author, committer \n\n
+;; author/committer: name <email> 1422998641 +0000
+(defn ^String parse-commit3 [^String s]
+  (let [end-tree-idx (.indexOf s (int \newline))
+        ^String tree-hdr (.substring s 0 end-tree-idx)
+        end-tree-hdr-idx (.indexOf tree-hdr (int \space))
+        tree (.substring tree-hdr (inc end-tree-hdr-idx))
+        parents (transient [])]
+    (loop [s (.substring s (inc end-tree-idx))]
+      (when (.startsWith s "parent ")
+        (let [parent-end-idx (.indexOf s (int \newline))]
+          (conj! parents (.substring s 0 parent-end-idx))
+          (recur (.substring s (inc parent-end-idx))))))
+    (persistent! parents)
+    ;; TODO NEED CTIME
+    (str  "tree:" tree " parents:" parents)))
+
+;; mode \space filename \0 <20-bytes-of-sha>
+(defn ^String parse-tree2
+  [^String s]
+  (prn :count (count s))
+  (let [space-pos (.indexOf ^String s (int \space))
+        mode (.substring ^String s 0 space-pos)
+        s (.substring ^String s (inc space-pos))
+        null-pos (.indexOf ^String s 0)
+        fname (.substring ^String s 0 null-pos)
+        s (.substring ^String s (inc null-pos))
+        _ (prn :last fname (count s))
+        sha-bytes (.substring ^String s 0 20)
+        s (.substring ^String s 20)]
+    (prn mode fname (count sha-bytes) (.toString (java.math.BigInteger. (.getBytes sha-bytes)) 16))
+    (when (pos? (count s))
+      (recur s))))
+
+(defn ^String parse-tree
+  [^bytes b]
+  (let [acc (transient [])
+        space (volatile! 0)
+        null (volatile! 0)]
+    (while (< @space (alength b))
+      (loop [#_space]
+        (when (not (= (int \space) (aget b @space)))
+          (vswap! space inc)
+          (recur)))
+      (vreset! null @space)
+      (loop [#_null]
+        (when (not (= 0 (aget b @null)))
+          (vswap! null inc)
+          (recur)))
+      (vswap! space inc)
+      (conj! acc (MapEntry.
+                  (String. (Arrays/copyOfRange b (int @space) (int @null)))
+                  (.toString (java.math.BigInteger. (Arrays/copyOfRange b (int @null) (int (+ @null 20)))) 16)))
+      (vreset! space (+ @null (inc 20))))
+    (persistent! acc)))
+
+(defn dispatch-obj-type [otype bytes unpack-size]
+  (case otype
+    :obj_commit (unzip-data bytes unpack-size) #_(parse-commit3 (String. ^bytes (unzip-data bytes unpack-size)))
+    :obj_tree (unzip-data bytes unpack-size) #_(parse-tree (unzip-data bytes unpack-size))
+    (name otype)))
 
 (comment
 
@@ -193,12 +275,11 @@
 .git/objects/pack/pack-a0e12de24d0a64d98d3f4f78fbcc820c79a721f8.pack
 "
 
+
   (def groot2 "/Users/abrooks/.voom-repos/Z2l0QGdpdGh1Yi5jb206amR1ZXkvZWZmZWN0cy5naXQ=/.git/")
   (def groot "/Users/abrooks/repos/lonocore/.git/")
 
-  (time (do (load-git-meta groot) nil))
-
-
+  (time (do (load-git-meta dispatch-obj-type groot) nil))
 
   )
 
@@ -213,3 +294,8 @@
 
 ;; Restore reflection warnings
 (set! *warn-on-reflection* reflection-state)
+
+;; Perf opportunities
+;;  - definline
+;;  - volatile!
+;;  - MapEntry
