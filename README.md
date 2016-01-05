@@ -1,14 +1,9 @@
 # frigit
 
-A Clojure library designed to ... well, that part is up to you.
-
-## Usage
-
-FIXME
+| Smooth sailing through git with Clojure. Cannons as needed.
 
 ## License
 
-Copyright © 2015 FIXME
+Copyright © 2016 Aaron Brooks <aaron@brooks1.net>
 
-Distributed under the Eclipse Public License either version 1.0 or (at
-your option) any later version.
+Distributed under the Eclipse Public License version 1.0.
