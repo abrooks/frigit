@@ -13,8 +13,6 @@
 ;; https://git-scm.com/book/en/v2/Git-Internals-Git-Objects
 ;; https://github.com/git/git/blob/master/Documentation/technical/pack-format.txt
 
-;; Save existing reflection warnings (restored at EOF)
-(def reflection-state *warn-on-reflection*)
 ;; This code is very sensitive to reflection so
 (set! *warn-on-reflection* true)
 
@@ -267,6 +265,3 @@
   (time (do (load-git-meta dispatch-obj-type groot) nil))
 
   )
-
-;; Restore reflection warnings
-(set! *warn-on-reflection* reflection-state)
