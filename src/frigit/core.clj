@@ -165,7 +165,7 @@
          :when (re-find #"\.pack$" (.getName f))]
      (.getCanonicalPath f))))
 
-(defn load-git-meta
+(defn walk-git-db
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
   Returns map of shas of maps with :type and appropriate params"
   [handle-obj-fn path]
@@ -173,94 +173,3 @@
         packs (git-pack-files path)]
     (doall (apply concat loose-objects (map (partial read-pack-objs handle-obj-fn) packs)))))
 
-;; ======================================================================
-;; consumer defined
-;; ======================================================================
-
-(defn parse-commit [^String s]
-  (let [lines (s/split-lines s)
-        tree (second (s/split (first lines) #" "))
-        parents (->> (rest lines)
-                     (filter #(.startsWith ^String % "parent"))
-                     (map #(second (s/split % #" "))) )]
-    (str  "tree:" tree " parents:" parents)))
-
-(def parent-filtering (filter #(.startsWith ^String % "parent")))
-(def value-keeping (map #(second (s/split % #" "))))
-
-(defn parse-commit2 [^String s]
-  (let [lines (s/split-lines s)
-        tree (second (s/split (first lines) #" "))
-        parents (into [] (comp parent-filtering value-keeping) (rest lines))]
-    (str  "tree:" tree " parents:" parents)))
-
-;; tree, parent*, author, committer \n\n
-;; author/committer: name <email> 1422998641 +0000
-(defn ^String parse-commit3 [^String s]
-  (let [end-tree-idx (.indexOf s (int \newline))
-        ^String tree-hdr (.substring s 0 end-tree-idx)
-        end-tree-hdr-idx (.indexOf tree-hdr (int \space))
-        tree (.substring tree-hdr (inc end-tree-hdr-idx))
-        parents (transient [])]
-    (loop [s (.substring s (inc end-tree-idx))]
-      (when (.startsWith s "parent ")
-        (let [parent-end-idx (.indexOf s (int \newline))]
-          (conj! parents (.substring s 0 parent-end-idx))
-          (recur (.substring s (inc parent-end-idx))))))
-    (persistent! parents)
-    ;; TODO NEED CTIME
-    (str  "tree:" tree " parents:" parents)))
-
-;; mode \space filename \0 <20-bytes-of-sha>
-(defn ^String parse-tree2
-  [^String s]
-  (prn :count (count s))
-  (let [space-pos (.indexOf ^String s (int \space))
-        mode (.substring ^String s 0 space-pos)
-        s (.substring ^String s (inc space-pos))
-        null-pos (.indexOf ^String s 0)
-        fname (.substring ^String s 0 null-pos)
-        s (.substring ^String s (inc null-pos))
-        _ (prn :last fname (count s))
-        sha-bytes (.substring ^String s 0 20)
-        s (.substring ^String s 20)]
-    (prn mode fname (count sha-bytes) (.toString (java.math.BigInteger. (.getBytes sha-bytes)) 16))
-    (when (pos? (count s))
-      (recur s))))
-
-(defn ^String parse-tree
-  [^bytes b]
-  (let [acc (transient [])
-        space (volatile! 0)
-        null (volatile! 0)]
-    (while (< @space (alength b))
-      (loop [#_space]
-        (when (not (= (int \space) (aget b @space)))
-          (vswap! space inc)
-          (recur)))
-      (vreset! null @space)
-      (loop [#_null]
-        (when (not (= 0 (aget b @null)))
-          (vswap! null inc)
-          (recur)))
-      (vswap! space inc)
-      (conj! acc (MapEntry.
-                  (String. (Arrays/copyOfRange b (int @space) (int @null)))
-                  (.toString (java.math.BigInteger. (Arrays/copyOfRange b (int @null) (int (+ @null 20)))) 16)))
-      (vreset! space (+ @null (inc 20))))
-    (persistent! acc)))
-
-(defn dispatch-obj-type [otype bytes unpack-size]
-  (case otype
-    :obj_commit (unzip-data bytes unpack-size) #_(parse-commit3 (String. ^bytes (unzip-data bytes unpack-size)))
-    :obj_tree (unzip-data bytes unpack-size) #_(parse-tree (unzip-data bytes unpack-size))
-    (name otype)))
-
-(comment
-
-  (def groot2 "/Users/abrooks/.voom-repos/Z2l0QGdpdGh1Yi5jb206amR1ZXkvZWZmZWN0cy5naXQ=/.git/")
-  (def groot "/Users/abrooks/repos/lonocore/.git/")
-
-  (time (do (load-git-meta dispatch-obj-type groot) nil))
-
-  )
