@@ -10,6 +10,7 @@
 
 ;; http://schacon.github.io/gitbook/7_the_packfile.html
 ;; http://schacon.github.io/gitbook/7_how_git_stores_objects.html
+;; https://git-scm.com/book/en/v2/Git-Internals-Git-Objects
 ;; https://github.com/git/git/blob/master/Documentation/technical/pack-format.txt
 
 ;; Save existing reflection warnings (restored at EOF)
@@ -260,21 +261,6 @@
 
 (comment
 
-  ;; Path structure
-"
-.git/objects/75
-.git/objects/75/04334c6d4970d4fd861555b1dfece1a0aea9e2
-.git/objects/7d
-.git/objects/7d/eb805c9ee94c601b2a1d6184945cb2cf05e334
-.git/objects/aa
-.git/objects/aa/f723792d4d25d1904b3f44266e208d51880aee
-.git/objects/info
-.git/objects/pack
-.git/objects/pack/pack-a0e12de24d0a64d98d3f4f78fbcc820c79a721f8.idx
-.git/objects/pack/pack-a0e12de24d0a64d98d3f4f78fbcc820c79a721f8.pack
-"
-
-
   (def groot2 "/Users/abrooks/.voom-repos/Z2l0QGdpdGh1Yi5jb206amR1ZXkvZWZmZWN0cy5naXQ=/.git/")
   (def groot "/Users/abrooks/repos/lonocore/.git/")
 
@@ -282,19 +268,5 @@
 
   )
 
-;; large repo stats
-;; ~8 seconds total read
-;; --
-;; 1 second of gzip inflation
-;; ~1.8 seconds of reading average of 61byte chunks (bigger chunks is much faster)
-;; ~3 seconds of byte-array from collection
-;; ~3 seconds of reflection on java.nio.DirectByteBufferR
-;; 90% of the time is idx+pax (idx = 33%, pack = 66% of the 90%)
-
 ;; Restore reflection warnings
 (set! *warn-on-reflection* reflection-state)
-
-;; Perf opportunities
-;;  - definline
-;;  - volatile!
-;;  - MapEntry
