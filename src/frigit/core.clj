@@ -6,8 +6,7 @@
            [java.util.zip Inflater]
            [java.nio ByteBuffer DirectByteBufferR]
            [java.nio.file Files Paths Path]
-           [java.nio.channels.FileChannel]
-           [java.nio.charset StandardCharsets]))
+           [java.nio.channels.FileChannel]))
 
 ;; http://schacon.github.io/gitbook/7_the_packfile.html
 ;; http://schacon.github.io/gitbook/7_how_git_stores_objects.html
