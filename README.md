@@ -1,6 +1,6 @@
 # frigit
 
-> Smooth sailing through git with Clojure. Cannons as needed.
+![Public domain image of Frigate](doc/frigate.png)
 
 ## License
 
