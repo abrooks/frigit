@@ -1,6 +1,6 @@
 # frigit
 
-| Smooth sailing through git with Clojure. Cannons as needed.
+> Smooth sailing through git with Clojure. Cannons as needed.
 
 ## License
 
