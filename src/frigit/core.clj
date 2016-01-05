@@ -53,7 +53,6 @@
       (conj! acc (.toString (java.math.BigInteger. bytes) 16)))
     (persistent! acc)))
 
-
 ;; NOTES on idx:
 ;; - fan-out entries are cumulative so the last entry has total count of objects
 ;; - object count from last fan-out is needed to walk v2 chunks
@@ -127,15 +126,15 @@
                     sizes))]
     (into {} datas)))
 
-;; *Not* thread safe -- worth more than 100ms on large repo of ~95K objects
-(def inflater (Inflater.))
-
 (defn unzip-data [^bytes bytes size]
-  (let [buf (byte-array size)]
-    (doto ^Inflater inflater
+  (let [buf (byte-array size)
+        ;; Re-creating this costs more than 100ms on large repo of ~95K objects
+        ;; ... can be reused via .reset but needs to be done thread-safely
+        infl (Inflater.)]
+    (doto ^Inflater infl
       (.setInput bytes)
       (.inflate buf)
-      (.reset))
+      (.end))
     buf))
 
 (defn unpack-object [bytes size]
