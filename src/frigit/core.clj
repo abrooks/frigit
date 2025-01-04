@@ -1,12 +1,11 @@
 (ns frigit.core
-  (:require [nio.core :as nio]
-            [clojure.string :as s])
+  (:require [clojure.string :as s])
   (:import [java.io File RandomAccessFile]
            [java.util Arrays]
            [java.util.zip Inflater]
            [java.nio ByteBuffer DirectByteBufferR]
-           [java.nio.file Files Paths Path]
-           [java.nio.channels.FileChannel]))
+           [java.nio.file Files Paths Path StandardOpenOption]
+           [java.nio.channels FileChannel]))
 
 ;; http://schacon.github.io/gitbook/7_the_packfile.html
 ;; http://schacon.github.io/gitbook/7_how_git_stores_objects.html
@@ -19,6 +18,16 @@
 (def idx-magic-v2+ (byte-array (map int "\377tOc")))
 (def idx-ver-v2 (byte-array [0 0 0 2]))
 
+;; ---------------------------------------------------------------------
+;; Replacement for pjstadig/nio.core functionality:
+(defn readable-channel
+  "Opens a FileChannel in read-only mode for the given path."
+  [^String path]
+  (FileChannel/open
+    (Paths/get path (into-array String []))
+    (into-array java.nio.file.OpenOption [StandardOpenOption/READ])))
+;; ---------------------------------------------------------------------
+
 (defn check-idx-v2-hdr! [^DirectByteBufferR mmchannel]
   (let [magic-bytes (byte-array 4)
         version-bytes (byte-array 4)]
@@ -28,7 +37,9 @@
     (and (Arrays/equals ^bytes idx-magic-v2+ magic-bytes)
          (Arrays/equals ^bytes idx-ver-v2 version-bytes))))
 
-(defn chan->mmchannel [^sun.nio.ch.FileChannelImpl rchan]
+(defn chan->mmchannel
+  "Memory-maps the given FileChannel in READ_ONLY mode."
+  [^FileChannel rchan]
   (.map rchan java.nio.channels.FileChannel$MapMode/READ_ONLY 0 (.size rchan)))
 
 ;; Longest object header we expect to see.
@@ -58,7 +69,7 @@
 ;; - object count from last fan-out is needed to walk v2 chunks
 ;; - idx is needed to know sha and offset of each object
 (defn read-idx [path]
-  (let [rchan (nio/readable-channel path)
+  (let [rchan (readable-channel path)
         ^DirectByteBufferR mm (chan->mmchannel rchan)
         _ (assert (check-idx-v2-hdr! mm))
         ;; skip to last fan-out entry
@@ -115,7 +126,7 @@
         idx-data (read-idx idx-path)
         pack-size (.length (File. pack-path))
         pack-objs-end (- pack-size 20)
-        rchan (nio/readable-channel pack-path)
+        rchan (readable-channel pack-path)
         mm (chan->mmchannel rchan)
         sizes (map (fn [[a b]]
                      (- b a))
