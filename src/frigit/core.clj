@@ -10,7 +10,7 @@
 ;; http://schacon.github.io/gitbook/7_the_packfile.html
 ;; http://schacon.github.io/gitbook/7_how_git_stores_objects.html
 ;; https://git-scm.com/book/en/v2/Git-Internals-Git-Objects
-;; https://github.com/git/git/blob/master/Documentation/technical/pack-format.txt
+;; https://github.com/git/git/blob/master/Documentation/gitformat-pack.txt
 
 ;; This code is very sensitive to reflection so
 (set! *warn-on-reflection* true)
@@ -28,6 +28,30 @@
     (into-array java.nio.file.OpenOption [StandardOpenOption/READ])))
 ;; ---------------------------------------------------------------------
 
+(defn split-byte-array
+  "Splits byte-array at first null/0 value"
+  [^bytes byte-array]
+  ;; This loop will intentionally throw an ArrayIndexOutOfBoundsException exception if no 0 is found.
+  (let [^int idx (loop [i 0]
+              (if (= 0 (aget byte-array i))
+                i
+                (recur (inc i))))]
+     [(Arrays/copyOf byte-array idx)
+      (Arrays/copyOfRange byte-array (inc idx) (alength byte-array))]))
+
+(defn ^byte/1 unzip-data [^byte/1 bytes size]
+  (let [buf (byte-array size)
+        ;; Re-creating this costs more than 100ms on large repo of ~95K objects
+        ;; ... can be reused via .reset but needs to be done thread-safely
+        ;; Maybe use: https://github.com/flatland/useful/blob/develop/src/flatland/useful/utils.clj#L192
+        ;; Need to find a pmap or similar that can take a passed in or bound threadpool / factory
+        infl (Inflater.)
+        _ (.setInput infl bytes)
+        len (.inflate infl buf)
+        _ (.end infl)
+        buf (Arrays/copyOf ^bytes buf len)]
+    buf))
+
 (defn check-idx-v2-hdr! [^DirectByteBufferR mmchannel]
   (let [magic-bytes (byte-array 4)
         version-bytes (byte-array 4)]
@@ -43,7 +67,8 @@
   (.map rchan java.nio.channels.FileChannel$MapMode/READ_ONLY 0 (.size rchan)))
 
 ;; Longest object header we expect to see.
-(def object-peek-bytes (count (str "commit " Long/MAX_VALUE (char 0))))
+;; git/git object-file.c defines MAX_HEADER_LEN to 32
+(def hdr-peek-bytes 32)
 
 (defn idx-read-entries! [^DirectByteBufferR mm num]
   (let [bytes (byte-array 4)
@@ -78,19 +103,22 @@
         obj-count (last fan-out)
         shas (idx-read-shas! mm obj-count)
         ;; Skipping past CRCs for now
-        _ (.position mm (+ (* 4 obj-count) (.position mm)))
+        _ (.position mm ^int (+ (* 4 obj-count) (.position mm)))
         #_#_crcs (idx-read-entries! mm obj-count)
         offs (idx-read-entries! mm obj-count)
         #_"We're not handling extended offsets or trailer checksums"]
     (apply sorted-map (mapcat list offs shas))))
 
 (def pack-hdr-type
-  {2r001 :obj_commit
-   2r010 :obj_tree
-   2r011 :obj_blob
-   2r100 :obj_tag
-   2r110 :obj_ofs_delta
-   2r111 :obj_ref_delta})
+  "3-bit object types"
+  {#_0 2r000 :INVALID
+   #_1 2r001 :obj_commit
+   #_2 2r010 :obj_tree
+   #_3 2r011 :obj_blob
+   #_4 2r100 :obj_tag
+   #_5 2r101 :RESERVED
+   #_6 2r110 :obj_ofs_delta
+   #_7 2r111 :obj_ref_delta})
 
 (defn get-pack-unpack-size
   [^DirectByteBufferR mm hdr pack-entry-size]
@@ -108,7 +136,7 @@
 
 (defn read-pack-entry!
   [handle-obj-fn ^DirectByteBufferR mm [pos sha] pack-entry-size]
-  (.position mm pos)
+  (.position mm ^int pos)
   (let [hdr (.get mm)
         otype (-> hdr
                   (bit-shift-right 4)
@@ -117,8 +145,8 @@
         [pack-size unpack-size] (get-pack-unpack-size mm hdr pack-entry-size)
         bytes (byte-array pack-size)
         _ (.get mm bytes 0 pack-size)
-        data (handle-obj-fn otype bytes unpack-size)]
-    [sha  {:type otype :size unpack-size :data data}]))
+        data (handle-obj-fn otype (delay (unzip-data bytes unpack-size)) unpack-size)]
+    [sha  {:otype otype :osize unpack-size :loc "PACK" :data data}]))
 
 (defn read-pack-objs
   [handle-obj-fn ^String pack-path]
@@ -137,37 +165,43 @@
                     sizes))]
     (into {} datas)))
 
-(defn unzip-data [^bytes bytes size]
-  (let [buf (byte-array size)
-        ;; Re-creating this costs more than 100ms on large repo of ~95K objects
-        ;; ... can be reused via .reset but needs to be done thread-safely
-        infl (Inflater.)]
-    (doto ^Inflater infl
-      (.setInput bytes)
-      (.inflate buf)
-      (.end))
-    buf))
+;; Loose object format is:
+;; - whole file is compressed
+;; - uncompressed stream starts with header followed by data
+;; - header is: [string_object_type] <SPACE> [string_decimal_length] <NULL>
 
 (defn unpack-object [bytes size]
-  (let [^bytes buf (unzip-data bytes size)]
-    (zipmap [:header :body]
-            (s/split (String. buf) (re-pattern (str (char 0))) 2))))
+  (let [^bytes buf (unzip-data bytes size)
+        [header data] (split-byte-array buf)]
+    {:header (String. ^bytes header) :data data}))
+
+(def loose-hdr-type
+  {"commit" :obj_commit
+   "tree"   :obj_tree
+   "blob"   :obj_blob
+   "tag"    :obj_tag})
 
 (defn parse-object-hdr [^String hdr]
   (let [[otype bsize-str] (s/split hdr #" " 2)
-        bsize (Integer/parseInt bsize-str)]
-    {:type otype
-     :size bsize}))
+        bsize (Long/parseLong bsize-str)]
+    {:otype (loose-hdr-type otype)
+     :osize bsize}))
 
 (defn load-git-loose-objs
-  [^String path]
+  [handle-obj-fn ^String path]
   (doall
    (for [^File sha-dir (-> path (str "/objects") File. .listFiles)
-         :when (not (#{"pack" "info"} (.getName sha-dir)))
+         :let [sha-dir-name (.getName sha-dir)]
+         :when (re-matches #"[0-9a-f][0-9a-f]" sha-dir-name)
          ^File sha-file (.listFiles sha-dir)
-         :let [sha (str (.getName sha-dir) (.getName sha-file))
-               bytes (Files/readAllBytes (.toPath sha-file))]]
-     [sha (parse-object-hdr (:header (unpack-object bytes object-peek-bytes)))])))
+         :let [sha-file-name (.getName sha-file)
+               sha (str sha-dir-name sha-file-name)
+               bytes (Files/readAllBytes (.toPath sha-file))
+               {:keys [header data]} (unpack-object bytes hdr-peek-bytes)
+               {:keys [otype osize]} (parse-object-hdr header)
+               data (delay (:data (unpack-object bytes (+ osize hdr-peek-bytes))))
+               loc (str path \/ sha-dir-name \/ sha-file-name)]]
+     [sha {:otype otype :osize osize :loc loc :data (handle-obj-fn otype data osize)}])))
 
 (defn git-pack-files
   [^String path]
@@ -178,9 +212,9 @@
 
 (defn walk-git-db
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
-  Returns map of shas of maps with :type and appropriate params"
+  Returns map of shas of maps with :otype and appropriate params"
   [handle-obj-fn path]
-  (let [loose-objects (load-git-loose-objs path)
+  (let [loose-objects (load-git-loose-objs handle-obj-fn path)
         packs (git-pack-files path)]
     (doall (apply concat loose-objects (map (partial read-pack-objs handle-obj-fn) packs)))))
 

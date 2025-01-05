@@ -6,8 +6,9 @@
 
 ;; tree, parent*, author, committer \n\n
 ;; author/committer: name <email> 1422998641 +0000
-(defn ^String parse-commit [^String s]
-  (let [end-tree-idx (.indexOf s (int \newline))
+(defn ^String parse-commit [^bytes b]
+  (let [s (String. b)
+        end-tree-idx (.indexOf s (int \newline))
         ^String tree-hdr (.substring s 0 end-tree-idx)
         end-tree-hdr-idx (.indexOf tree-hdr (int \space))
         tree (.substring tree-hdr (inc end-tree-hdr-idx))
@@ -48,8 +49,8 @@
 
 (defn dump-metadata [otype bytes unpack-size]
   (case otype
-    :obj_commit (parse-commit (String. ^bytes (frigit/unzip-data bytes unpack-size)))
-    :obj_tree (parse-tree (frigit/unzip-data bytes unpack-size))
+    :obj_commit (parse-commit @bytes)
+    :obj_tree (parse-tree @bytes)
     (name otype)))
 
 (comment
