@@ -8,8 +8,8 @@
 
 There are many git libraries and git tools out there. **frigit** is designed
 for fast and efficient mass extraction from git repositories, particularly when
-focused on metadata and repo structure (rather than the contents of the files.
-(Such as you might get from `git fast-export`).
+focused on metadata and repo structure (rather than the contents of the files,
+such as you might get from `git fast-export`).
 
 ## Notes
 
