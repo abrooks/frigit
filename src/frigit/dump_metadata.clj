@@ -2,27 +2,39 @@
   (:require [clojure.string :as s]
             [frigit.core :as frigit])
   (:import [clojure.lang MapEntry]
+           [java.io File]
            [java.util Arrays]))
 
-;; tree, parent*, author, committer \n\n
-;; author/committer: name <email> 1422998641 +0000
-(defn ^String parse-commit [^bytes b]
-  (let [s (String. b)
-        end-tree-idx (.indexOf s (int \newline))
-        ^String tree-hdr (.substring s 0 end-tree-idx)
-        end-tree-hdr-idx (.indexOf tree-hdr (int \space))
-        tree (.substring tree-hdr (inc end-tree-hdr-idx))
-        parents (transient [])]
-    (loop [s (.substring s (inc end-tree-idx))]
-      (when (.startsWith s "parent ")
-        (let [parent-end-idx (.indexOf s (int \newline))]
-          (conj! parents (.substring s 0 parent-end-idx))
-          (recur (.substring s (inc parent-end-idx))))))
-    (persistent! parents)
-    ;; TODO NEED CTIME
-    (str  "tree:" tree " parents:" parents)))
+(defn parse-author-committer
+  "Parse author/committer line into parts"
+  [s]
+  (let [[role & infos] (s/split s #"[<> ]+")
+        [tz epochtime email & nameparts] (reverse infos)
+        name (s/join " " (reverse nameparts))]
+    {:role role :name name :email email :epochtime epochtime :tz tz}))
 
-(defn ^String parse-tree
+;; One per line:
+;; tree, parent*, author, committer \n\n description
+;; author/committer = name <email> 1422998641 +0000
+(defn parse-commit [^bytes b]
+  (let [s (String. b)
+        lines (s/split-lines s)
+        [tree-entry & lines] lines
+        _ (assert (.startsWith tree-entry "tree "))
+        [_ tree] (s/split tree-entry #" " 2)
+        [parent-entries lines] (split-with #(.startsWith % "parent ") lines)
+        parents ()
+        [author-committer-entries message-entries]
+        , (split-with #(or (.startsWith % "author ")
+                           (.startsWith % "committer "))
+                      lines)
+        author-committer (map parse-author-committer author-committer-entries)
+        message (s/join "\n" (rest message-entries)) ; rest skips \n\n 
+        res {:tree tree :parents parents :message message}]
+     (reduce #(assoc %1 (keyword (:role %2)) %2) res author-committer)))
+
+
+(defn parse-tree
   [^bytes b]
   (let [acc (transient [])
         space (volatile! 0)
@@ -53,7 +65,15 @@
     :obj_tree (parse-tree @bytes)
     (name otype)))
 
+(defn dump-subdirs [path]
+  (let [dirs (->> path File. .listFiles (map #(str % "/.git")))]
+    (for [dir dirs]
+      (frigit/walk-git-db dump-metadata dir))))
+
 (comment
+
+  (require '[frigit.core :as fc])
+  (require '[frigit.dump-metadata :as dm])
 
   (def groot2 "/Users/abrooks/.voom-repos/Z2l0QGdpdGh1Yi5jb206amR1ZXkvZWZmZWN0cy5naXQ=/.git/")
   (def groot "/Users/abrooks/repos/lonocore/.git/")
