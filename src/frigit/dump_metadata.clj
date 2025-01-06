@@ -29,7 +29,7 @@
                            (.startsWith % "committer "))
                       lines)
         author-committer (map parse-author-committer author-committer-entries)
-        message (s/join "\n" (rest message-entries)) ; rest skips \n\n 
+        message (s/join "\n" (rest message-entries)) ; rest skips \n\n
         res {:tree tree :parents parents :message message}]
      (reduce #(assoc %1 (keyword (:role %2)) %2) res author-committer)))
 
