@@ -13,7 +13,7 @@ such as you might get from `git fast-export`).
 
 ## Notes
 
-Doesn't handle the more recent Multi-Pack-Index (MDIX / .mdix) object directory
+Doesn't handle the more recent Multi-Pack-Index (MIDX / .midx) object directory
 features.  (cf. https://github.com/git/git/blob/master/Documentation/technical/multi-pack-index.txt)
 
 ## License
