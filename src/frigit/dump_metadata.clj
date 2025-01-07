@@ -21,9 +21,9 @@
         lines (s/split-lines s)
         [tree-entry & lines] lines
         _ (assert (.startsWith tree-entry "tree "))
-        [_ tree] (s/split tree-entry #" " 2)
+        tree (second (s/split tree-entry #" " 2))
         [parent-entries lines] (split-with #(.startsWith % "parent ") lines)
-        parents ()
+        parents (mapv #(second (s/split % #" " 2)) parent-entries)
         [author-committer-entries message-entries]
         , (split-with #(or (.startsWith % "author ")
                            (.startsWith % "committer "))
