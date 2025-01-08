@@ -163,7 +163,7 @@
                (map (partial read-pack-entry! handle-obj-fn mm)
                     idx-data
                     sizes))]
-    (into {} datas)))
+    datas))
 
 ;; Loose object format is:
 ;; - whole file is compressed
