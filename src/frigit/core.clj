@@ -122,6 +122,8 @@
 
 (defn get-pack-unpack-size
   [^DirectByteBufferR mm hdr pack-entry-size]
+  ;; We need to know sz-bytes to know how much packed data is left (from
+  ;; pack-entry-size) after reading the variable length header
   (let [[sz-bytes unpack-size]
         , (loop [last hdr, n 0, sz (bit-and 2r00001111 hdr)]
             (if (zero? (bit-and 2r10000000 last))
@@ -137,7 +139,7 @@
 (defn read-pack-entry!
   [handle-obj-fn ^DirectByteBufferR mm [pos sha] pack-entry-size]
   (.position mm ^int pos)
-  (let [hdr (.get mm)
+  (let [hdr (.get mm) ; get a single byte at this position
         otype (-> hdr
                   (bit-shift-right 4)
                   (bit-and 2r111)
