@@ -120,31 +120,40 @@
    #_6 2r110 :obj_ofs_delta
    #_7 2r111 :obj_ref_delta})
 
-(defn get-pack-unpack-size
-  [^DirectByteBufferR mm hdr pack-entry-size]
-  ;; We need to know sz-bytes to know how much packed data is left (from
-  ;; pack-entry-size) after reading the variable length header
-  (let [[sz-bytes unpack-size]
-        , (loop [last hdr, n 0, sz (bit-and 2r00001111 hdr)]
-            (if (zero? (bit-and 2r10000000 last))
-              [(inc n) sz]
-              (let [next (.get mm)
-                    val (-> next
-                            (bit-and 2r01111111)
-                            (bit-shift-left (+ 4 (* 7 n))))]
-                (recur next (inc n) (bit-or val sz)))))
-        pack-size (- pack-entry-size sz-bytes)]
-    [pack-size unpack-size]))
+(defn read-size-offset-encoding!
+  "Given an 'initial-byte (already read from mm) and how many 'initial-bits that
+   are masked by 'initial-mask of that byte, accumulate from subsequent bytes
+   on 'mm and return: [bytes-read, encoded-size]"
+  [^DirectByteBufferR mm initial-byte initial-bits initial-mask]
+  ;; We could use just initial-bits and compute the initial-mask:
+  ;;    (dec (bit-shift-left 2r1 initial-bits))
+  ;; but this takes computation and is also less visibly clear as to what's going on.
+  ;; Conversely, we could just take the mask and find the position of the
+  ;; highest bit set but that also adds needless computation and complexity.
+  ;; Better to just be a bitredundant in this case.
+  (loop [prev-byte initial-byte, bytes-read 0, sz (bit-and initial-mask initial-byte)]
+      (if (not (zero? (bit-and 2r10000000 prev-byte)))
+        (let [next (.get mm) ; read next byte
+              val (-> next
+                      (bit-and 2r01111111)
+                      ;; We gain 7 bits of encoded size/offset from each subsequent byte read
+                      (bit-shift-left (+ initial-bits (* 7 bytes-read))))]
+          (recur next (inc bytes-read) (bit-or val sz)))
+        ;; [bytes read, decoded size]
+        [(inc bytes-read), sz])))
 
 (defn read-pack-entry!
   [handle-obj-fn ^DirectByteBufferR mm [pos sha] pack-entry-size]
   (.position mm ^int pos)
   (let [hdr (.get mm) ; get a single byte at this position
         otype (-> hdr
+                  (bit-and 2r01110000)
                   (bit-shift-right 4)
-                  (bit-and 2r111)
                   (pack-hdr-type))
-        [pack-size unpack-size] (get-pack-unpack-size mm hdr pack-entry-size)
+        [hdr-bytes unpack-size] (read-size-offset-encoding! mm hdr 4 2r00001111)
+        ;; We need to know sz-bytes to know how much packed data is left (from
+        ;; pack-entry-size) after reading the variable length header
+        pack-size (- pack-entry-size hdr-bytes)
         bytes (byte-array pack-size)
         _ (.get mm bytes 0 pack-size)
         data (handle-obj-fn otype (delay (unzip-data bytes unpack-size)) unpack-size)]
