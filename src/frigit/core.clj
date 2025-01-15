@@ -207,6 +207,7 @@
          ^File sha-file (.listFiles sha-dir)
          :let [sha-file-name (.getName sha-file)
                sha (str sha-dir-name sha-file-name)
+               ;; TODO don't need to read all bytes, just enough for the header at first
                bytes (Files/readAllBytes (.toPath sha-file))
                {:keys [header data]} (unpack-object bytes hdr-peek-bytes)
                {:keys [otype osize]} (parse-object-hdr header)
