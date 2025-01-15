@@ -52,7 +52,8 @@
           (vswap! null inc)
           (recur)))
       (vswap! space inc)
-      (conj! acc [(String. (Arrays/copyOfRange b (int @space) (int @null)))
+      (conj! acc [(String. (Arrays/copyOfRange b (int @sz) (dec (int @space))))
+                  (String. (Arrays/copyOfRange b (int @space) (int @null)))
                   (.toString (java.math.BigInteger. (Arrays/copyOfRange b (int @null) (int (+ @null 20)))) 16)])
       (vreset! space (+ @null (inc 20))))
     (persistent! acc)))
@@ -61,7 +62,8 @@
 (defn dump-metadata [otype bytes unpack-size]
   (case otype
     :obj_commit (parse-commit @bytes)
-    ;:obj_tree (parse-tree @bytes)
+    :obj_tree (parse-tree @bytes)
+    ;:obj_blob {:bytes (count @bytes)}
     (name otype)))
 
 (defn dump-subdirs [path]
