@@ -111,12 +111,12 @@
 
 (def pack-hdr-type
   "3-bit object types"
-  {#_0 2r000 :INVALID
+  {;_0 2r000 :INVALID
    #_1 2r001 :obj_commit
    #_2 2r010 :obj_tree
    #_3 2r011 :obj_blob
    #_4 2r100 :obj_tag
-   #_5 2r101 :RESERVED
+   ;_5 2r101 :RESERVED
    #_6 2r110 :obj_ofs_delta
    #_7 2r111 :obj_ref_delta})
 
@@ -130,7 +130,7 @@
   ;; but this takes computation and is also less visibly clear as to what's going on.
   ;; Conversely, we could just take the mask and find the position of the
   ;; highest bit set but that also adds needless computation and complexity.
-  ;; Better to just be a bitredundant in this case.
+  ;; Better to just be a tad redundant in this case.
   (loop [prev-byte initial-byte, bytes-read 0, sz (bit-and initial-mask initial-byte)]
       (if (not (zero? (bit-and 2r10000000 prev-byte)))
         (let [next (.get mm) ; read next byte
