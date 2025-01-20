@@ -1,6 +1,6 @@
 (ns frigit.core
   (:require [clojure.string :as s])
-  (:import [java.io File RandomAccessFile]
+  (:import [java.io File FileFilter RandomAccessFile]
            [java.util Arrays]
            [java.util.zip Inflater]
            [java.nio ByteBuffer DirectByteBufferR]
@@ -215,11 +215,17 @@
                loc (str path \/ sha-dir-name \/ sha-file-name)]]
      [sha {:otype otype :osize osize :loc loc :data (handle-obj-fn otype data osize)}])))
 
+(defn gen-file-filter [re]
+  (reify FileFilter
+    (^boolean accept [_ ^File file]
+      (boolean (re-find re (.getName file))))))
+
+(def pack-file-filter (-> "\\.pack$" re-pattern gen-file-filter))
+
 (defn git-pack-files
   [^String path]
   (doall
-   (for [^File f (-> path (str "/objects/pack") File. .listFiles)
-         :when (re-find #"\.pack$" (.getName f))]
+   (for [^File f (-> path (str "/objects/pack") File. (.listFiles ^FileFilter pack-file-filter))]
      (.getCanonicalPath f))))
 
 (defn walk-git-db
