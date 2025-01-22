@@ -30,8 +30,9 @@
                       lines)
         author-committer (map parse-author-committer author-committer-entries)
         message (s/join "\n" (rest message-entries)) ; rest skips \n\n
-        res {:tree tree :parents parents :message message}]
-     (reduce #(assoc %1 (keyword (:role %2)) %2) res author-committer)))
+        res (transient {:tree tree :parents parents :message message})
+        res (reduce #(assoc! %1 (keyword (:role %2)) %2) res author-committer)]
+     (persistent! res)))
 
 
 (defn parse-tree
@@ -61,15 +62,21 @@
 
 (defn dump-metadata [otype bytes unpack-size]
   (case otype
-    :obj_commit (parse-commit @bytes)
-    :obj_tree (parse-tree @bytes)
+    :obj_commit (parse-commit (force bytes))
+    :obj_tree (parse-tree (force bytes))
     ;:obj_blob {:bytes (count @bytes)}
     (name otype)))
 
 (defn dump-subdirs [path]
-  (let [dirs (->> path File. .listFiles (map #(str % "/.git")))]
-    (for [dir dirs]
-      (map #(with-meta % {:repo-path dir}) (frigit/walk-git-db dump-metadata dir)))))
+  (let [dirs (->> path File. .listFiles (map #(str % "/.git")))
+        dir-count (count dirs)]
+    (pmap (fn [[i d]]
+            (do
+              (println (format ">> [%d/%d] %s" (inc i) dir-count d))
+              (let [r (frigit/walk-git-db dump-metadata d)]
+                (println (format "<< [%d/%d] %s" (inc i) dir-count d))
+                r)))
+          (map list (range) (sort dirs)))))
 
 (comment
 

@@ -15,6 +15,8 @@
 ;; This code is very sensitive to reflection so
 (set! *warn-on-reflection* true)
 
+(def ^:dynamic *sha-db* false)
+
 (def idx-magic-v2+ (byte-array (map int "\377tOc")))
 (def idx-ver-v2 (byte-array [0 0 0 2]))
 
@@ -80,7 +82,7 @@
       (conj! acc (.getInt buf)))
     (persistent! acc)))
 
-(defn idx-read-shas! [^DirectByteBufferR mm count]
+(defn read-shas! [^DirectByteBufferR mm count]
   ;; Extra leading zero byte to keep leading bits unsigned
   (let [bytes (byte-array 21)
         acc (transient [])]
@@ -101,7 +103,7 @@
         _ (.position mm (+ (* 4 (dec 256)) (.position mm)))
         fan-out (idx-read-entries! mm 1)
         obj-count (last fan-out)
-        shas (idx-read-shas! mm obj-count)
+        shas (read-shas! mm obj-count)
         ;; Skipping past CRCs for now
         _ (.position mm ^int (+ (* 4 obj-count) (.position mm)))
         #_#_crcs (idx-read-entries! mm obj-count)
@@ -120,7 +122,7 @@
    #_6 2r110 :obj_ofs_delta
    #_7 2r111 :obj_ref_delta})
 
-(defn read-size-offset-encoding!
+(defn read-size-encoding!
   "Given an 'initial-byte (already read from mm) and how many 'initial-bits that
    are masked by 'initial-mask of that byte, accumulate from subsequent bytes
    on 'mm and return: [bytes-read, encoded-size]"
@@ -142,39 +144,120 @@
         ;; [bytes read, decoded size]
         [(inc bytes-read), sz])))
 
+;; https://github.com/git/git/blob/efff4a85a4fce58b2aa850c6fbf4d8828329f51d/packfile.c#L1226-L1265
+(defn read-offset-encoding!
+  "Given an 'initial-byte (already read from mm) and how many 'initial-bits that
+   are masked by 'initial-mask of that byte, accumulate from subsequent bytes
+   on 'mm and return: [bytes-read, encoded-size]"
+  [^DirectByteBufferR mm initial-byte initial-bits initial-mask]
+  (loop [prev-byte initial-byte, bytes-read 0, sz (bit-and initial-mask initial-byte)]
+      (if (not (zero? (bit-and 2r10000000 prev-byte)))
+        (let [nsz (bit-shift-left (inc sz) 7)
+              next (.get mm) ; read next byte
+              val (bit-and next 2r01111111)]
+          (recur next (inc bytes-read) (bit-or nsz val)))
+        ;; [bytes read, decoded size]
+        [(inc bytes-read), sz])))
+
+(defn apply-copy-delta! [param ^DirectByteBufferR buffer base-bytes out-bytes out-idx]
+  (let [ofs (if (zero? (bit-and 2r00000001 param)) 0 (bit-and 0xff (.get buffer)))
+        ofs (bit-or ofs (bit-shift-left (if (zero? (bit-and 2r00000010 param)) 0 (bit-and 0xff (.get buffer)))  8))
+        ofs (bit-or ofs (bit-shift-left (if (zero? (bit-and 2r00000100 param)) 0 (bit-and 0xff (.get buffer))) 16))
+        ofs (bit-or ofs (bit-shift-left (if (zero? (bit-and 2r00001000 param)) 0 (bit-and 0xff (.get buffer))) 24))
+        sz  (if (zero? (bit-and 2r00010000 param)) 0 (bit-and 0xff (.get buffer)))
+        sz  (bit-or sz  (bit-shift-left (if (zero? (bit-and 2r00100000 param)) 0 (bit-and 0xff (.get buffer)))  8))
+        sz  (bit-or sz  (bit-shift-left (if (zero? (bit-and 2r01000000 param)) 0 (bit-and 0xff (.get buffer))) 16))
+        sz  (if (zero? sz) 0x10000 sz)]
+   (System/arraycopy base-bytes ofs out-bytes @out-idx sz)
+   (swap! out-idx #(+ % sz))))
+
+(defn apply-append-delta! [sz ^DirectByteBufferR buffer out-bytes out-idx]
+  (.get buffer out-bytes @out-idx sz)
+  (swap! out-idx #(+ % sz)))
+
+(defn apply-delta [^bytes delta-bytes sha]
+  (let [^DirectByteBufferR buffer (ByteBuffer/allocateDirect (alength delta-bytes))
+        _ (.put buffer delta-bytes)
+        _ (.flip buffer)
+        base-init    (.get buffer)
+        [_ base-sz]  (read-size-encoding! buffer base-init  7 2r01111111)
+        final-init   (.get buffer)
+        [_ final-sz] (read-size-encoding! buffer final-init 7 2r01111111)
+        base-entry (*sha-db* sha :MISSING)
+        base-bytes (-> base-entry (:bytes :MISSINGB) force)
+        base-size  (-> base-entry :osize force)
+        ;; TODO Decide if we want to unpack osize for the user
+        #_ (assert (= base-size (alength ^bytes base-bytes)))
+        out-bytes (byte-array final-sz)
+        out-idx (atom 0)]
+     (while (< 0 (.remaining buffer))
+        (let [instr (.get buffer)
+              instr-param (bit-and 2r01111111 instr)]
+           (case (bit-and 2r10000000 instr)
+              2r10000000 (apply-copy-delta! instr-param buffer base-bytes out-bytes out-idx)
+              2r00000000 (apply-append-delta! instr-param buffer out-bytes out-idx))))
+     out-bytes))
+
 (defn read-pack-entry!
-  [handle-obj-fn ^DirectByteBufferR mm [pos sha] pack-entry-size]
+  [idx ^DirectByteBufferR mm pos sha pack-entry-size]
   (.position mm ^int pos)
   (let [hdr (.get mm) ; get a single byte at this position
         otype (-> hdr
                   (bit-and 2r01110000)
                   (bit-shift-right 4)
                   (pack-hdr-type))
-        [hdr-bytes unpack-size] (read-size-offset-encoding! mm hdr 4 2r00001111)
+        [hdr-bytes unpack-size] (read-size-encoding! mm hdr 4 2r00001111)
         ;; We need to know sz-bytes to know how much packed data is left (from
         ;; pack-entry-size) after reading the variable length header
         pack-size (- pack-entry-size hdr-bytes)
-        bytes (byte-array pack-size)
-        _ (.get mm bytes 0 pack-size)
-        data (handle-obj-fn otype (delay (unzip-data bytes unpack-size)) unpack-size)]
-    [sha  {:otype otype :osize unpack-size :loc "PACK" :data data}]))
+        here (.position mm)
+        delay-info (case otype
+                     :obj_ref_delta (delay (.position mm ^int here)
+		                                  (let [base-sha (first (read-shas! mm 1))
+                                            delta-pos (.position mm)
+                                            base-type (-> base-sha (*sha-db* :MISSING) :type force)]
+                                        (assert base-sha)
+                                        {:type base-type :base-sha base-sha :pos delta-pos}))
+                     :obj_ofs_delta (delay (.position mm ^int here)
+		                                  (let [ibyte (.get mm)
+                                            [n-bytes ofs] (read-offset-encoding! mm ibyte 7 2r01111111)
+                                            ofs-pos (- pos ofs)
+                                            delta-pos (.position mm)
+                                            base-sha (-> ofs-pos idx)
+                                            base-type (-> base-sha (*sha-db* :MISSING) :type force)]
+                                        (assert base-sha)
+		                                    {:type base-type :base-sha base-sha :pos delta-pos}))
+                      {:type otype :pos here})
+        delay-type (delay (-> delay-info force :type))
+        delay-bytes (delay (let [entry-bytes (byte-array pack-size)
+                                 {:keys [pos base-sha]} (force delay-info)
+                                 _ (.position mm ^int pos)
+                                 _ (.get mm entry-bytes 0 pack-size)
+                                 unpacked (unzip-data entry-bytes unpack-size)]
+                              (if (#{:obj_ref_delta :obj_ofs_delta} otype)
+                                (do
+                                (apply-delta unpacked base-sha))
+                                unpacked)))]
+    (transient (hash-map
+                 :otype otype
+                 :osize unpack-size
+                 :type delay-type
+                 :bytes delay-bytes))))
 
-(defn read-pack-objs
-  [handle-obj-fn ^String pack-path]
+(defn read-pack-objs!
+  [SHA-DB ^String pack-path]
   (let [idx-path (.replace pack-path ".pack" ".idx")
-        idx-data (read-idx idx-path)
+        idx (read-idx idx-path)
         pack-size (.length (File. pack-path))
         pack-objs-end (- pack-size 20)
         rchan (readable-channel pack-path)
         mm (chan->mmchannel rchan)
-        sizes (map (fn [[a b]]
-                     (- b a))
-                   (partition 2 1 [pack-objs-end] (keys idx-data)))
-        datas (doall
-               (map (partial read-pack-entry! handle-obj-fn mm)
-                    idx-data
-                    sizes))]
-    datas))
+        sizes (map (fn [[a b]] (- b a))
+                   (partition 2 1 [pack-objs-end] (keys idx)))]
+  (doseq [[[pos sha] size] (map list idx sizes)
+          :let [obj-map (read-pack-entry! idx mm pos sha size)]]
+    (assoc! obj-map :file pack-path)
+    (assoc! SHA-DB sha obj-map))))
 
 ;; Loose object format is:
 ;; - whole file is compressed
@@ -198,10 +281,9 @@
     {:otype (loose-hdr-type otype)
      :osize bsize}))
 
-(defn load-git-loose-objs
-  [handle-obj-fn ^String path]
-  (doall
-   (for [^File sha-dir (-> path (str "/objects") File. .listFiles)
+(defn load-git-loose-objs!
+  [SHA-DB handle-obj-fn ^String path]
+  (doseq [^File sha-dir (-> path (str "/objects") File. .listFiles)
          :let [sha-dir-name (.getName sha-dir)]
          :when (re-matches #"[0-9a-f][0-9a-f]" sha-dir-name)
          ^File sha-file (.listFiles sha-dir)
@@ -209,11 +291,17 @@
                sha (str sha-dir-name sha-file-name)
                ;; TODO don't need to read all bytes, just enough for the header at first
                bytes (Files/readAllBytes (.toPath sha-file))
-               {:keys [header data]} (unpack-object bytes hdr-peek-bytes)
+               header (:header (unpack-object bytes hdr-peek-bytes))
                {:keys [otype osize]} (parse-object-hdr header)
-               data (delay (:data (unpack-object bytes (+ osize hdr-peek-bytes))))
-               loc (str path \/ sha-dir-name \/ sha-file-name)]]
-     [sha {:otype otype :osize osize :loc loc :data (handle-obj-fn otype data osize)}])))
+               delay-bytes (delay (:data (unpack-object bytes (+ osize hdr-peek-bytes))))
+               file (str path \/ sha-dir-name \/ sha-file-name)]]
+     (assoc! SHA-DB sha
+                    (transient (hash-map
+                                 :otype otype
+                                 :osize osize
+                                 :file file
+                                 :type otype
+                                 :bytes delay-bytes)))))
 
 (defn gen-file-filter [re]
   (reify FileFilter
@@ -232,7 +320,18 @@
   "Loads all metadata objects (tags/commits/trees - not blobs or deltas)
   Returns map of shas of maps with :otype and appropriate params"
   [handle-obj-fn path]
-  (let [loose-objects (load-git-loose-objs handle-obj-fn path)
-        packs (git-pack-files path)]
-    (doall (apply concat loose-objects (map (partial read-pack-objs handle-obj-fn) packs)))))
+  (let [SHA-DB (transient clojure.lang.PersistentHashMap/EMPTY)
+        loose-objects (load-git-loose-objs! SHA-DB handle-obj-fn path)
+        packs (git-pack-files path)
+        _ (doseq [pack packs]
+             (read-pack-objs! SHA-DB pack))
+        sha-db (persistent! SHA-DB)]
+    (binding [*sha-db* sha-db]
+      (doseq [[sha {:keys [type bytes osize] :as m}] sha-db
+               :let [forced-type (force type)]]
+         (assoc! m :type forced-type)
+         (assoc! m :repo-path path :data (handle-obj-fn forced-type bytes osize)))
+      (doseq [[sha m] sha-db]
+         (dissoc! m :pack-mm :bytes)))
+    (zipmap (keys sha-db) (map persistent! (vals sha-db)))))
 
