@@ -53,9 +53,10 @@
           (vswap! null inc)
           (recur)))
       (vswap! space inc)
+      ;; mode, name, sha
       (conj! acc [(String. (Arrays/copyOfRange b (int @sz) (dec (int @space))))
                   (String. (Arrays/copyOfRange b (int @space) (int @null)))
-                  (.toString (java.math.BigInteger. (Arrays/copyOfRange b (int @null) (int (+ @null 20)))) 16)])
+                  (.toString (java.math.BigInteger. (Arrays/copyOfRange b (int @null) (int (+ @null (inc 20))))) 16)])
       (vreset! space (+ @null (inc 20))))
     (persistent! acc)))
 
