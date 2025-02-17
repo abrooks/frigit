@@ -1,8 +1,7 @@
 (ns frigit.dump-metadata
   (:require [clojure.string :as s]
             [frigit.core :as frigit])
-  (:import [clojure.lang MapEntry]
-           [java.io File]
+  (:import [java.io File]
            [java.util Arrays]))
 
 (defn parse-author-committer
@@ -32,8 +31,7 @@
         message (s/join "\n" (rest message-entries)) ; rest skips \n\n
         res (transient {:tree tree :parents parents :message message})
         res (reduce #(assoc! %1 (keyword (:role %2)) %2) res author-committer)]
-     (persistent! res)))
-
+    (persistent! res)))
 
 (defn parse-tree
   [^bytes b]
@@ -60,7 +58,6 @@
       (vreset! space (+ @null (inc 20))))
     (persistent! acc)))
 
-
 (defn dump-metadata [otype bytes unpack-size]
   (case otype
     :obj_commit (parse-commit (force bytes))
@@ -72,21 +69,17 @@
   (let [dirs (->> path File. .listFiles (map #(str % "/.git")))
         dir-count (count dirs)]
     (pmap (fn [[i d]]
-            (do
-              (println (format ">> [%d/%d] %s" (inc i) dir-count d))
-              (let [r (frigit/walk-git-db dump-metadata d)]
-                (println (format "<< [%d/%d] %s" (inc i) dir-count d))
-                r)))
+            (println (format ">> [%d/%d] %s" (inc i) dir-count d))
+            (let [r (frigit/walk-git-db dump-metadata d)]
+              (println (format "<< [%d/%d] %s" (inc i) dir-count d))
+              r))
           (map list (range) (sort dirs)))))
 
 (comment
 
-  (require '[frigit.core :as fc])
   (require '[frigit.dump-metadata :as dm])
 
   (def groot2 "/Users/abrooks/.voom-repos/Z2l0QGdpdGh1Yi5jb206amR1ZXkvZWZmZWN0cy5naXQ=/.git/")
   (def groot "/Users/abrooks/repos/lonocore/.git/")
 
-  (time (do (frigit/walk-git-db dump-metadata groot) nil))
-
-  )
+  (time (do (frigit/walk-git-db dump-metadata groot) nil)))
